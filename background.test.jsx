@@ -1,0 +1,24 @@
+import React from 'react';
+import {render,screen,fireEvent,act,cleanup} from '@testing-library/react';
+import {it,expect,afterEach} from 'vitest';
+import plugin from './plugin.js';
+import {ThemeProvider} from '@/themes/context';
+import {$connection} from '@/store/session';
+import {$activeGatewayProfile} from '@/store/profile';
+afterEach(cleanup);
+it('background marker is opt-in and persists alongside legacy settings',()=>{
+ act(()=>{$connection.set({connectionId:'conn-a'});$activeGatewayProfile.set('alpha')});
+ const scope=JSON.stringify(['conn-a','alpha']); const legacy={unread:{enabled:true,icon:'✓',color:'#123456'}};
+ const store=new Map([['markers-v1',{[scope]:legacy}]]);const registrations=[];
+ const ctx={storage:{get:(k,d)=>store.has(k)?structuredClone(store.get(k)):d,set:(k,v)=>store.set(k,structuredClone(v))},register:c=>{registrations.push(c);return ()=>{}}};
+ plugin.register(ctx);const style=registrations.find(c=>c.id==='marker-style'),page=registrations.find(c=>c.id==='page');
+ render(<ThemeProvider>{style.render()}{page.render()}</ThemeProvider>);
+ const symbol=screen.getByLabelText('Background work / sub-agent symbol');
+ const field=symbol.closest('fieldset');expect(field.querySelector('input[type=checkbox]').checked).toBe(false);
+ fireEvent.click(field.querySelector('input[type=checkbox]'));fireEvent.change(symbol,{target:{value:'🤖'}});
+ fireEvent.change(screen.getByLabelText('Background work / sub-agent color'),{target:{value:'#abcdef'}});
+ fireEvent.click(screen.getByText('Save marker settings'));
+ expect(store.get('markers-v1')[scope].unread).toEqual(legacy.unread);
+ expect(store.get('markers-v1')[scope].background).toEqual({enabled:true,icon:'🤖',color:'#abcdef'});
+ expect(document.querySelector('[data-theme-studio-session-markers]').textContent).toContain('border-(--ui-text-tertiary)');
+});

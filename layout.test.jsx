@@ -1,0 +1,24 @@
+import React from 'C:/Users/camh1/AppData/Local/hermes/hermes-agent/node_modules/react/index.js';
+import {render,act,cleanup} from 'C:/Users/camh1/AppData/Local/hermes/hermes-agent/node_modules/@testing-library/react/dist/index.js';
+import {it,expect,afterEach} from 'vitest';
+import {ThemeProvider,modePref} from 'C:/Users/camh1/AppData/Local/hermes/hermes-agent/apps/desktop/src/themes/context.tsx';
+import {$sessions,$selectedStoredSessionId} from 'C:/Users/camh1/AppData/Local/hermes/hermes-agent/apps/desktop/src/store/session.ts';
+import plugin from './plugin.js';
+afterEach(()=>{cleanup();$sessions.set([]);$selectedStoredSessionId.set(null);localStorage.clear()});
+it('provides a readable hierarchy and identifiable controls while preserving settings',()=>{
+ modePref.assign('default','light'); $sessions.set([{id:'layout-test',connection_id:'source-a',profile:'default'}]); $selectedStoredSessionId.set('layout-test');
+ const data={}, contributions=[]; plugin.register({storage:{get:(k,f)=>data[k]??f,set:(k,v)=>data[k]=v},register(c){contributions.push(c);return ()=>{}}});
+ const v=render(React.createElement(ThemeProvider,null,contributions.find(c=>c.id==='page').render()));
+ const title=v.getByRole('heading',{name:'Theme Studio',level:1});
+ expect(parseFloat(title.style.fontSize)).toBeGreaterThanOrEqual(24);
+ expect(v.getByRole('heading',{name:'Saved themes',level:2})).toBeTruthy();
+ expect(v.getByRole('heading',{name:'Session markers',level:2})).toBeTruthy();
+ expect(v.getByLabelText('Saved theme').style.border).toContain('solid');
+ expect(v.getByRole('button',{name:'Save marker settings'}).style.border).toContain('solid');
+ expect(v.getByText(/Windows key \+ period/)).toBeTruthy();
+ act(()=>v.getByText('Start editing current theme').click());
+ expect(v.getByRole('heading',{name:'Edit colors',level:2})).toBeTruthy();
+ expect(v.getByLabelText('Theme name').style.border).toContain('solid');
+ expect(v.getByText(/preview is an approximation/i)).toBeTruthy();
+ expect(v.getByText(/Saved designs follow the focused chat owner/)).toBeTruthy();
+});

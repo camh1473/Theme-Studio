@@ -1,0 +1,17 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
+const source=fs.readFileSync(__dirname+'/plugin.js','utf8').replace(/^import .*;\r?\n/gm,'').replace('export function createStudio','function createStudio').replace('export default {','const pluginDefault = {');
+const create=vm.runInNewContext(source+'\ncreateStudio',{THEMES_AREA:'themes',ROUTES_AREA:'routes',SIDEBAR_NAV_AREA:'nav'});
+const css='.keep { color:red }';
+const legacy={name:'theme-studio-legacy',label:'old',colors:{background:'#ff69b4',foreground:'#111111',primary:'#222222'},darkColors:{background:'#123456',foreground:'#ffffff',primary:'#cccccc'},customCSS:css};
+const store=new Map([['scoped-themes-v1',[{scope:'s',theme:legacy}]]]), regs=new Map();
+const ctx={storage:{get:(k,d)=>store.has(k)?store.get(k):d,set:(k,v)=>store.set(k,v)},register:c=>{regs.set(c.id,c.data);return()=>regs.delete(c.id)}};
+const studio=create(ctx); const migrated=regs.get(legacy.name);
+assert.equal(migrated.customCSS,css, 'legacy saved themes must not change on registration');
+assert.equal(store.get('scoped-themes-v1')[0].theme.customCSS,css,'migration must not mutate storage');
+assert.ok(migrated.customCSS.includes(css));
+const api={scope:'s',resolvedMode:'light',theme:migrated,themeName:legacy.name,previewTheme(){},clearThemePreview(){}};
+studio.begin(api);studio.edit('chatBackground','#abcdef',api);studio.resetItem('chatBackground',api);
+assert.equal(regs.get('preview').customCSS,migrated.customCSS,'reset selected must restore baseline CSS exactly');
+studio.edit('chatBackground','#abcdef',api);studio.reset(api);
+assert.equal(regs.get('preview').customCSS,migrated.customCSS,'reset all must restore baseline CSS exactly');
+console.log('legacy preservation and reset PASS');

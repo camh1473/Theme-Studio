@@ -1,0 +1,16 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
+const source=fs.readFileSync(__dirname+'/plugin.js','utf8').replace(/^import .*;\r?\n/gm,'').replace('export function createStudio','function createStudio').replace('export default {','const pluginDefault = {');
+const create=vm.runInNewContext(source+'\ncreateStudio',{THEMES_AREA:'themes',ROUTES_AREA:'routes',SIDEBAR_NAV_AREA:'nav'});
+const css='.keep { color:red }';
+const legacy={name:'theme-studio-legacy',label:'old',colors:{background:'#ff69b4',foreground:'#111111',primary:'#222222'},darkColors:{background:'#123456',foreground:'#ffffff',primary:'#cccccc'},customCSS:css};
+const store=new Map([['scoped-themes-v1',[{scope:'s',theme:legacy}]]]), regs=new Map();
+const ctx={storage:{get:(k,d)=>store.has(k)?store.get(k):d,set:(k,v)=>store.set(k,v)},register:c=>{regs.set(c.id,c.data);return()=>regs.delete(c.id)}};
+const studio=create(ctx); assert.equal(regs.get(legacy.name).customCSS,css,'legacy registration must remain unchanged');
+const api={scope:'s',resolvedMode:'light',theme:legacy,themeName:legacy.name,previewTheme(){},clearThemePreview(){}};
+studio.begin(api);studio.edit('background','#abcdef',api);assert.equal(regs.get('preview').customCSS,css,'shared background edit must not opt in chat');
+studio.edit('chatBackground','#ff69b4',api);let preview=regs.get('preview');assert.equal(preview.colors.background,'#abcdef');assert.ok(preview.customCSS.includes('#ff69b4'));assert.ok(preview.customCSS.startsWith(css));
+studio.resetItem('chatBackground',api);assert.equal(regs.get('preview').customCSS,css,'reset chat restores exact CSS');
+studio.edit('chatBackground','#ff69b4',api); const id=studio.save('new',api);assert.ok(regs.get(id).customCSS.includes('#ff69b4'));
+studio.reset(api);assert.equal(regs.get('preview').customCSS,css);studio.revert(api);
+assert.equal(store.get('scoped-themes-v1')[0].theme.customCSS,css,'storage legacy unchanged');
+console.log('opt-in and reset PASS');
