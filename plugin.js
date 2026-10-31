@@ -144,8 +144,9 @@ const ui = {
   button:{minHeight:38,padding:'8px 12px',border:'1px solid var(--ui-stroke-secondary)',borderRadius:6,background:'var(--ui-bg-editor)',color:'var(--ui-text-primary)',fontSize:14,fontWeight:600,cursor:'pointer'},
   label:{display:'block',fontSize:14,fontWeight:600,margin:'14px 0 6px'},
   details:{margin:'16px 0',fontSize:14,lineHeight:1.5},
+  callout:{margin:'0 0 16px',padding:'12px 14px',border:'1px solid var(--ui-warning, #b58a1a)',borderRadius:8,background:'var(--ui-bg-editor)'},
 };
-function Studio({studio,ctx,markerEvents}) {
+function Studio({studio,ctx,markerEvents,bgImageEvents}) {
   const themeApi = useTheme(); const connection = useValue(host.state.connectionId); const profile = useValue(host.state.profile);
   const owner = useValue(host.state.focusedSessionOwner);
   const scope = scopeFor(owner); const activeScope = scopeFor({connectionId:connection,profile});
@@ -200,7 +201,8 @@ function Studio({studio,ctx,markerEvents}) {
     jsx('details',{style:ui.details,children:[jsx('summary',{style:{fontWeight:600,cursor:'pointer'},children:'How themes and preview work'}),jsx('p',{style:ui.text,children:'Saved designs follow the focused chat owner (connection and profile). Apply and restore require that owner to match the active gateway profile. Preview and applied appearance paint the desktop window; contributed themes also appear in the global picker. Switching chat focus does not create a per-chat theme.'}),
     jsx('p',{children:'Sessions sidebar color is independent. In glass mode it layers the chosen color over the existing material using the native glass transparency setting; the displayed color will vary with the backdrop and tint settings. Chat background is independent and applies in both modes outside glass mode; glass mode keeps its original appearance. Sidebar and menu backgrounds share a semantic token used in multiple surfaces. The panel header / primary accent is a shared primary token and also affects other surfaces. The working-session indicator and other interactive areas share an accent token. Other colors are shared semantic tokens. The editor copies the currently painted palette, not the original full light/dark theme; switching modes may not preserve the original appearance. The picker accepts six-digit RGB; existing non-hex values remain unchanged until edited.'})]}),
     jsx(MarkerPage,{ctx,events:markerEvents}),
-    jsx(SoundPage,{ctx})
+    jsx(SoundPage,{ctx}),
+    jsx(BackgroundImagePage,{ctx,events:bgImageEvents})
   ]});
 }
 
@@ -388,6 +390,30 @@ export function playSoundSettings(settings, opts) {
   const ac = opts.audioContext || getSharedAudioContext();
   return playPresetTone(settings.presetId, volumePct, ac);
 }
+// ---- One-time (dismissible, per-scope) "set core sound to None" reminder ----
+// Core's completion sound (lib/completion-sound.ts) is a single global
+// nanostore atom cached at startup: there is no per-profile hook and no safe
+// way for a plugin to mute it live (and writing its localStorage key
+// wouldn't take effect without a restart, and would also mute it for every
+// OTHER profile). This is a pure UI stopgap: a visible, dismissible nudge,
+// not an attempt to touch the core setting.
+export const NOTIFICATION_SETTINGS_PATH = '/settings?tab=notifications&setting=notifications.completion-sound';
+export function openNotificationSettings() {
+  if (typeof host !== 'undefined' && host && typeof host.navigate === 'function') { host.navigate(NOTIFICATION_SETTINGS_PATH); return true; }
+  return false;
+}
+export function readSoundReminderDismissed(ctx, scope) {
+  const all = ctx.storage.get('sound-reminder-dismissed-v1', {});
+  return !!(all && typeof all === 'object' && !Array.isArray(all) && scope && all[scope]);
+}
+export function dismissSoundReminder(ctx, scope) {
+  if (!scope) throw Error('Active connection and profile are required.');
+  const all = ctx.storage.get('sound-reminder-dismissed-v1', {});
+  const base = all && typeof all === 'object' && !Array.isArray(all) ? all : {};
+  const next = {...base, [scope]: true};
+  ctx.storage.set('sound-reminder-dismissed-v1', next);
+  return next;
+}
 export function readSoundSettings(ctx, scope) {
   const all = ctx.storage.get('sound-settings-v1', {});
   const entry = all && typeof all === 'object' && !Array.isArray(all) && scope ? all[scope] : null;
@@ -432,13 +458,24 @@ export function SoundPage({ctx}) {
   const connection = useValue(host.state.connectionId), profile = useValue(host.state.profile), scope = markerScopeFor(connection, profile);
   const [draft, setDraft] = useState(DEFAULT_SOUND_SETTINGS);
   const [message, setMessage] = useState('');
-  useEffect(() => { setDraft(readSoundSettings(ctx, scope)); setMessage(''); }, [ctx, scope]);
+  const [reminderDismissed, setReminderDismissed] = useState(true);
+  useEffect(() => { setDraft(readSoundSettings(ctx, scope)); setMessage(''); setReminderDismissed(readSoundReminderDismissed(ctx, scope)); }, [ctx, scope]);
   const edit = (field, value) => setDraft(old => ({...old, [field]: value}));
   const save = () => { try {
     if (!scope || markerScopeFor(host.state.connectionId.get(), host.state.profile.get()) !== scope) throw Error('Active connection and profile are required.');
     setDraft(saveSoundSettings(ctx, scope, draft));
     setMessage('Saved for the active connection and profile.');
   } catch (e) { setMessage(e.message); } };
+  // Dismissal is scoped like every other preference here (per connection +
+  // profile) and stored via ctx.storage, not a core setting -- this never
+  // touches the actual completion-sound value, only whether this reminder
+  // has been acknowledged for this scope.
+  const dismissReminder = () => { try { if (scope) dismissSoundReminder(ctx, scope); } finally { setReminderDismissed(true); } };
+  const openSettings = () => { openNotificationSettings(); };
+  // Shown whenever the CONFIGURED (saved) sound for this scope is non-None
+  // and the user hasn't dismissed it yet for this scope -- not for every
+  // keystroke while merely browsing presets in the dropdown.
+  const showReminder = draft.presetId !== 'none' && !reminderDismissed;
   // No more thenable special-case: every presetId (including 'win:*' and
   // 'file') now resolves synchronously through hermes-media://.
   const preview = () => {
@@ -458,7 +495,15 @@ export function SoundPage({ctx}) {
   };
   return jsx('section', {style:ui.section, children:[
     jsx('h2', {style:ui.heading, children:'Notification sound'}),
-    jsx('p', {style:ui.text, children:'Plays a short cue when a message finishes for the active connection and profile only — other profiles are unaffected. To avoid hearing the cue twice, set Hermes Settings → Notifications → completion sound to "None".'}),
+    jsx('p', {style:ui.text, children:'Plays a short cue when a message finishes for the active connection and profile only — other profiles are unaffected.'}),
+    showReminder && jsx('div', {role:'alert', 'aria-label':'Notification sound reminder', style:ui.callout, children:[
+      jsx('p', {style:{margin:0, fontWeight:700, fontSize:14}, children:'⚠️ To avoid hearing two sounds at once'}),
+      jsx('p', {style:{margin:'6px 0 0', fontSize:14, lineHeight:1.5}, children:'Open Hermes Settings → Notifications and set the completion sound to "None". Theme Studio\'s sound plays independently of it, so with both set, you\'ll hear two sounds for every finished message.'}),
+      jsx('div', {style:{display:'flex', gap:8, marginTop:10, flexWrap:'wrap'}, children:[
+        soundButton('Open Notification Settings', openSettings, false),
+        soundButton('Dismiss', dismissReminder, false)
+      ]})
+    ]}),
     jsx('label', {style:ui.label, htmlFor:'studio-sound-preset', children:'Sound'}),
     jsx('select', {id:'studio-sound-preset', style:ui.field, value:draft.presetId, onChange:e=>edit('presetId', e.target.value), 'aria-label':'Notification sound preset', children:[
       jsx('option', {value:'none', children:'None'}, 'none'),
@@ -487,6 +532,193 @@ export function SoundPage({ctx}) {
     jsx('p', {role:'status', 'aria-label':'Sound status', children:message})
   ]});
 }
+// ---- Background image (per connection+profile) ----
+// A genuine local-file picker slot (ctx.os.pickOpenPath), exactly like the
+// sound feature's 'file' preset: only a filesystem PATH ever reaches
+// ctx.storage, never image bytes/base64. Unlike audio/video, image
+// extensions (png/jpg/jpeg/gif/webp) are NOT in media-protocol.ts's
+// STREAMABLE_MEDIA_EXTENSIONS allowlist, so hermes-media://stream/... 404s
+// (actually 415s) for them -- confirmed by reading that file directly. The
+// only other door onto local file bytes is the undocumented
+// window.hermesDesktop.readFileDataUrl(path) bridge (global.d.ts:300,
+// already used throughout the core app for local image/attachment
+// previews). That bridge is used here ONLY to resolve a transient in-memory
+// data: URL for the live <img> preview and for the injected background CSS
+// -- it is never written to ctx.storage, and the resolved data: URL is
+// re-derived from the stored path on every load/profile switch rather than
+// persisted.
+export const BG_IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
+export const DEFAULT_BG_IMAGE_SETTINGS = {path: '', opacity: 40, size: 50};
+export function clampBgOpacity(v) { const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : 40; }
+// Size is a background-size percentage (of the surface box), applied with
+// background-position: center and background-repeat: no-repeat so the image
+// shows as a centered, scaled photo rather than a full-bleed cover/stretch.
+// Defaults to 50% per the user's request; clamped to a sane [10,100] range.
+export function clampBgSize(v) { const n = Number(v); return Number.isFinite(n) ? Math.max(10, Math.min(100, Math.round(n))) : 50; }
+export function validBackgroundImageSettings(s) {
+  return !!s && typeof s === 'object' && typeof s.path === 'string' && s.path.length <= 1000
+    && Number.isInteger(s.opacity) && s.opacity >= 0 && s.opacity <= 100
+    // size is optional for backward compatibility with entries saved before
+    // this field existed; when present it must be a valid integer in range.
+    && (s.size === undefined || (Number.isInteger(s.size) && s.size >= 10 && s.size <= 100));
+}
+export function readBackgroundImageSettings(ctx, scope) {
+  const all = ctx.storage.get('background-image-v1', {});
+  const entry = all && typeof all === 'object' && !Array.isArray(all) && scope ? all[scope] : null;
+  return validBackgroundImageSettings(entry) ? {...DEFAULT_BG_IMAGE_SETTINGS, ...entry} : {...DEFAULT_BG_IMAGE_SETTINGS};
+}
+export function saveBackgroundImageSettings(ctx, scope, settings) {
+  if (!scope) throw Error('Active connection and profile are required.');
+  const next = {
+    // Only ever a path string (from ctx.os.pickOpenPath) — never image bytes/base64/data URLs.
+    path: String(settings?.path || '').trim(),
+    opacity: clampBgOpacity(settings?.opacity),
+    size: clampBgSize(settings?.size)
+  };
+  if (!validBackgroundImageSettings(next)) throw Error('Invalid background image settings.');
+  const all = ctx.storage.get('background-image-v1', {});
+  const base = all && typeof all === 'object' && !Array.isArray(all) ? all : {};
+  const merged = {...base, [scope]: next};
+  ctx.storage.set('background-image-v1', merged);
+  if (JSON.stringify(ctx.storage.get('background-image-v1', null)) !== JSON.stringify(merged)) throw Error('Storage failed; settings were not confirmed.');
+  return next;
+}
+export function clearBackgroundImageSettings(ctx, scope) { return saveBackgroundImageSettings(ctx, scope, DEFAULT_BG_IMAGE_SETTINGS); }
+// Resolves a chosen path to a transient data: URL for preview/CSS use only;
+// never cached to storage. `reader` is injectable for tests; defaults to the
+// real bridge when present, and degrades to null (no throw) when absent —
+// an older/non-Electron host simply shows no preview and no background.
+export async function resolveBackgroundImageDataUrl(filePath, reader) {
+  if (!filePath) return null;
+  const fn = reader || (typeof window !== 'undefined' ? window.hermesDesktop?.readFileDataUrl : undefined);
+  if (typeof fn !== 'function') return null;
+  try {
+    const result = await fn(filePath);
+    if (typeof result === 'string' && result.startsWith('data:')) return result;
+    console.warn('Theme Studio: background image reader returned a non-data: result for', filePath, result);
+    return null;
+  } catch (e) { console.warn('Theme Studio: background image reader failed for', filePath, e); return null; }
+}
+// Pure CSS builder: a ::before layer behind [data-chat-surface]'s content,
+// simple compositing (no touching child z-index/stacking). Unlike
+// chatBackground's solid-color override (gated :not([data-hermes-glass]),
+// because a flat color fill would just paper over the native glass
+// material), an uploaded photo is wanted in BOTH modes: outside glass mode
+// it sits under the surface's own (usually opaque) background color; in
+// glass mode styles.css sets --ui-chat-surface-background: transparent for
+// [data-chat-surface] (see :root[data-hermes-glass] in styles.css), so the
+// surface itself has nothing opaque painted over this ::before and the
+// image shows straight through, with the glass panel's own translucency/
+// blur compositing on top of it exactly like the native backdrop would.
+// No :not([data-hermes-glass]) gate here on purpose -- apply unconditionally.
+export function backgroundImageCSS(dataUrl, opacityPct, sizePct) {
+  if (!dataUrl) return '';
+  const opacity = clampBgOpacity(opacityPct) / 100;
+  if (opacity <= 0) return '';
+  const size = clampBgSize(sizePct);
+  const safeUrl = JSON.stringify(dataUrl);
+  return `:root [data-chat-surface] { position: relative; }\n:root [data-chat-surface]::before { content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; background-image: url(${safeUrl}); background-size: ${size}% auto; background-position: center; background-repeat: no-repeat; opacity: ${opacity}; }`;
+}
+// Mounted imperatively from register(ctx) -- NOT as a statusBar.right render
+// contribution. A statusBar.right item's render only stays alive while that
+// UI slot does: it is a user-toggleable statusbar item (see
+// $statusbarHiddenIds/setStatusbarItemVisible in the desktop's own
+// statusbar-prefs) and the desktop unmounts a hidden item's render entirely
+// rather than just hiding it, which runs this effect's cleanup and strips
+// the <style> tag from <head> -- silently deleting the background image CSS
+// until the item is shown again. The same statusbar slot can also go away
+// under any view that doesn't keep the main chat statusbar mounted (e.g. a
+// Bot's chat), so the background was never guaranteed to persist there in
+// the first place. A background-image wallpaper is a document-wide visual,
+// not a statusbar widget's business -- give it a lifecycle of its own, tied
+// only to the plugin itself (ctx.onDispose), so it survives every chat view,
+// bot or not, regardless of what the statusbar is doing.
+function mountBackgroundImageStyle(ctx, events) {
+  const el = document.createElement('style');
+  el.dataset.themeStudioBgImage = '';
+  document.head.appendChild(el);
+  let cancelled = false;
+  let generation = 0;
+  const update = async () => {
+    const myGeneration = ++generation;
+    const connection = host.state.connectionId.get();
+    const profile = host.state.profile.get();
+    const scope = markerScopeFor(connection, profile);
+    const settings = readBackgroundImageSettings(ctx, scope);
+    if (!settings.path) { if (!cancelled && myGeneration === generation) el.textContent = ''; return; }
+    const dataUrl = await resolveBackgroundImageDataUrl(settings.path);
+    if (cancelled || myGeneration !== generation) return;
+    el.textContent = backgroundImageCSS(dataUrl, settings.opacity, settings.size);
+  };
+  events.addEventListener('change', update);
+  const unsubConnection = host.state.connectionId.subscribe(update);
+  const unsubProfile = host.state.profile.subscribe(update);
+  const teardown = () => {
+    cancelled = true;
+    events.removeEventListener('change', update);
+    unsubConnection();
+    unsubProfile();
+    el.remove();
+  };
+  // ctx.onDispose is always present on the real SDK context handed to a
+  // registered plugin; guarded the same defensive way as the host.onEvent
+  // check below it, so a minimal/older ctx (e.g. a narrower test harness
+  // exercising an unrelated feature) degrades to "never torn down" instead
+  // of throwing register() itself.
+  if (typeof ctx.onDispose === 'function') ctx.onDispose(teardown);
+}
+export function BackgroundImagePage({ctx, events}) {
+  const connection = useValue(host.state.connectionId), profile = useValue(host.state.profile), scope = markerScopeFor(connection, profile);
+  const [draft, setDraft] = useState(DEFAULT_BG_IMAGE_SETTINGS);
+  const [preview, setPreview] = useState(null);
+  const [message, setMessage] = useState('');
+  useEffect(() => { setDraft(readBackgroundImageSettings(ctx, scope)); setPreview(null); setMessage(''); }, [ctx, scope]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!draft.path) { setPreview(null); return; }
+    resolveBackgroundImageDataUrl(draft.path).then(url => { if (!cancelled) setPreview(url); });
+    return () => { cancelled = true; };
+  }, [draft.path]);
+  const pickFile = async () => {
+    if (!ctx.os || typeof ctx.os.pickOpenPath !== 'function') { setMessage('File picker unavailable on this host.'); return; }
+    try {
+      const path = await ctx.os.pickOpenPath({ title: 'Choose a background image', filters: [{ extensions: BG_IMAGE_EXTENSIONS, name: 'Images' }] });
+      if (path) { setDraft(old => ({...old, path})); setMessage('Chosen: ' + path); }
+    } catch (e) { setMessage(e.message); }
+  };
+  const save = () => { try {
+    if (!scope || markerScopeFor(host.state.connectionId.get(), host.state.profile.get()) !== scope) throw Error('Active connection and profile are required.');
+    const next = saveBackgroundImageSettings(ctx, scope, draft);
+    setDraft(next);
+    setMessage('Saved for the active connection and profile.');
+    events.dispatchEvent(new Event('change'));
+  } catch (e) { setMessage(e.message); } };
+  const clearImage = () => { try {
+    if (!scope || markerScopeFor(host.state.connectionId.get(), host.state.profile.get()) !== scope) throw Error('Active connection and profile are required.');
+    const next = clearBackgroundImageSettings(ctx, scope);
+    setDraft(next); setPreview(null);
+    setMessage('Cleared the background image.');
+    events.dispatchEvent(new Event('change'));
+  } catch (e) { setMessage(e.message); } };
+  return jsx('section', {style:ui.section, children:[
+    jsx('h2', {style:ui.heading, children:'Background image'}),
+    jsx('p', {style:ui.text, children:'Pick a local image to show behind the conversation, with adjustable transparency. Applies in both glass and non-glass mode, for the active connection and profile only; in glass mode the glass panels stay translucent and composite over the image rather than hiding it.'}),
+    jsx('div', {style:{display:'flex', gap:8, alignItems:'center', flexWrap:'wrap'}, children:[
+      soundButton('Choose image…', pickFile, false),
+      jsx('span', {'aria-label':'Chosen background image path', children: draft.path || 'No image chosen.'})
+    ]}),
+    preview ? jsx('img', {src:preview, alt:'Background image preview', style:{display:'block', marginTop:10, maxWidth:220, maxHeight:140, borderRadius:6, border:'1px solid var(--ui-stroke-secondary)'}}) : null,
+    jsx('label', {style:ui.label, htmlFor:'studio-bg-image-opacity', children:'Opacity: ' + draft.opacity + '%'}),
+    jsx('input', {id:'studio-bg-image-opacity', type:'range', min:0, max:100, step:1, value:draft.opacity, onChange:e=>setDraft(old=>({...old, opacity:clampBgOpacity(e.target.value)})), 'aria-label':'Background image opacity', style:{display:'block', width:'min(100%, 320px)'}}),
+    jsx('label', {style:ui.label, htmlFor:'studio-bg-image-size', children:'Size: ' + draft.size + '%'}),
+    jsx('input', {id:'studio-bg-image-size', type:'range', min:10, max:100, step:1, value:draft.size, onChange:e=>setDraft(old=>({...old, size:clampBgSize(e.target.value)})), 'aria-label':'Background image size', style:{display:'block', width:'min(100%, 320px)'}}),
+    jsx('div', {style:{display:'flex', gap:8, marginTop:12, flexWrap:'wrap'}, children:[
+      soundButton('Save background image', save, false),
+      soundButton('Clear background image', clearImage, false)
+    ]}),
+    jsx('p', {role:'status', 'aria-label':'Background image status', children:message})
+  ]});
+}
 function ScopeStyle({ctx,events}) {
   const connection=useValue(host.state.connectionId), profile=useValue(host.state.profile), scope=markerScopeFor(connection,profile);
   useEffect(()=>{ const el=document.createElement('style'); el.dataset.themeStudioSessionMarkers=''; document.head.appendChild(el); const update=()=>{el.textContent=markerCSS(read(ctx,scope));}; events.addEventListener('change',update); update(); return ()=>{events.removeEventListener('change',update);el.remove();}; },[ctx,events,scope]);
@@ -509,8 +741,13 @@ function MarkerPage({ctx,events}) {
 export default { id:'theme-studio', name:'Theme Studio', defaultEnabled:false, register(ctx) {
   const studio = createStudio(ctx);
   const markerEvents = new EventTarget();
+  const bgImageEvents = new EventTarget();
   ctx.register({id:'marker-style',area:'statusBar.right',render:()=>jsx(ScopeStyle,{ctx,events:markerEvents})});
-  ctx.register({id:'page',area:ROUTES_AREA,data:{path:'/theme-studio'},render:()=>jsx(Studio,{studio,ctx,markerEvents})});
+  // Not a statusBar.right contribution (see mountBackgroundImageStyle's own
+  // comment for why) -- mounted directly so it outlives any chat view,
+  // including a Bot's, and any statusbar visibility toggle.
+  mountBackgroundImageStyle(ctx, bgImageEvents);
+  ctx.register({id:'page',area:ROUTES_AREA,data:{path:'/theme-studio'},render:()=>jsx(Studio,{studio,ctx,markerEvents,bgImageEvents})});
   ctx.register({id:'nav',area:SIDEBAR_NAV_AREA,data:{path:'/theme-studio',label:'Theme Studio',codicon:'symbol-color'}});
   if (typeof host.onEvent === 'function') host.onEvent('message.complete', event => handleSoundCompletionEvent(ctx, event));
 } };
