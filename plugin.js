@@ -617,7 +617,20 @@ export function backgroundImageCSS(dataUrl, opacityPct, sizePct) {
   if (opacity <= 0) return '';
   const size = clampBgSize(sizePct);
   const safeUrl = JSON.stringify(dataUrl);
-  return `:root [data-chat-surface] { position: relative; }\n:root [data-chat-surface]::before { content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; background-image: url(${safeUrl}); background-size: ${size}% auto; background-position: center; background-repeat: no-repeat; opacity: ${opacity}; }`;
+  // Defense in depth for Bot Mode (and any future chat-area contribution):
+  // the ::before only has to beat the surface's OWN background (painted
+  // behind it regardless of z-index -- confirmed by live DOM inspection and
+  // a byte-for-byte reproduction), but nothing stops a future contribution
+  // area (chat.empty, or the active-conversation viewport) from adding an
+  // in-flow, non-positioned sibling with its own opaque background-color --
+  // those paint in front of a negative z-index pseudo-element regardless of
+  // which stacking context either sits in. Forcing every direct descendant
+  // chain of [data-chat-surface] transparent removes that failure mode
+  // without touching hermes-bots (or any other plugin's) source -- it is
+  // pure CSS Theme Studio already owns injecting. `!important` because a
+  // contributed view's own Tailwind utility (e.g. a future `bg-background`)
+  // otherwise wins on source order/specificity.
+  return `:root [data-chat-surface] { position: relative; }\n:root [data-chat-surface]::before { content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; background-image: url(${safeUrl}); background-size: ${size}% auto; background-position: center; background-repeat: no-repeat; opacity: ${opacity}; }\n:root [data-chat-surface] > * { background-color: transparent !important; }`;
 }
 // Mounted imperatively from register(ctx) -- NOT as a statusBar.right render
 // contribution. A statusBar.right item's render only stays alive while that
@@ -641,9 +654,10 @@ function mountBackgroundImageStyle(ctx, events) {
   let generation = 0;
   const update = async () => {
     const myGeneration = ++generation;
+    const owner = host.state.focusedSessionOwner?.get();
     const connection = host.state.connectionId.get();
     const profile = host.state.profile.get();
-    const scope = markerScopeFor(connection, profile);
+    const scope = scopeFor(owner) || scopeFor({connectionId:connection, profile});
     const settings = readBackgroundImageSettings(ctx, scope);
     if (!settings.path) { if (!cancelled && myGeneration === generation) el.textContent = ''; return; }
     const dataUrl = await resolveBackgroundImageDataUrl(settings.path);
@@ -651,11 +665,13 @@ function mountBackgroundImageStyle(ctx, events) {
     el.textContent = backgroundImageCSS(dataUrl, settings.opacity, settings.size);
   };
   events.addEventListener('change', update);
+  const unsubOwner = host.state.focusedSessionOwner?.subscribe ? host.state.focusedSessionOwner.subscribe(update) : () => {};
   const unsubConnection = host.state.connectionId.subscribe(update);
   const unsubProfile = host.state.profile.subscribe(update);
   const teardown = () => {
     cancelled = true;
     events.removeEventListener('change', update);
+    unsubOwner();
     unsubConnection();
     unsubProfile();
     el.remove();
@@ -668,7 +684,10 @@ function mountBackgroundImageStyle(ctx, events) {
   if (typeof ctx.onDispose === 'function') ctx.onDispose(teardown);
 }
 export function BackgroundImagePage({ctx, events}) {
-  const connection = useValue(host.state.connectionId), profile = useValue(host.state.profile), scope = markerScopeFor(connection, profile);
+  const owner = useValue(host.state.focusedSessionOwner);
+  const connection = useValue(host.state.connectionId), profile = useValue(host.state.profile);
+  const scope = scopeFor(owner) || scopeFor({connectionId:connection, profile});
+  const currentScope = () => scopeFor(host.state.focusedSessionOwner?.get()) || scopeFor({connectionId:host.state.connectionId.get(), profile:host.state.profile.get()});
   const [draft, setDraft] = useState(DEFAULT_BG_IMAGE_SETTINGS);
   const [preview, setPreview] = useState(null);
   const [message, setMessage] = useState('');
@@ -687,14 +706,14 @@ export function BackgroundImagePage({ctx, events}) {
     } catch (e) { setMessage(e.message); }
   };
   const save = () => { try {
-    if (!scope || markerScopeFor(host.state.connectionId.get(), host.state.profile.get()) !== scope) throw Error('Active connection and profile are required.');
+    if (!scope || currentScope() !== scope) throw Error('Active connection and profile are required.');
     const next = saveBackgroundImageSettings(ctx, scope, draft);
     setDraft(next);
     setMessage('Saved for the active connection and profile.');
     events.dispatchEvent(new Event('change'));
   } catch (e) { setMessage(e.message); } };
   const clearImage = () => { try {
-    if (!scope || markerScopeFor(host.state.connectionId.get(), host.state.profile.get()) !== scope) throw Error('Active connection and profile are required.');
+    if (!scope || currentScope() !== scope) throw Error('Active connection and profile are required.');
     const next = clearBackgroundImageSettings(ctx, scope);
     setDraft(next); setPreview(null);
     setMessage('Cleared the background image.');
