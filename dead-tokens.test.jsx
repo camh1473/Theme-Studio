@@ -54,11 +54,11 @@ it('other surviving tokens (foreground, primary, accent) still render and are ed
   modePref.assign('default','light');
   $sessions.set([{id:'dead-token-test3',connection_id:'source-a',profile:'default'}]); $selectedStoredSessionId.set('dead-token-test3');
   const {view} = openStudio();
-  for (const label of ['Main text color (shared)','Panel header / primary accent (shared)','Accent surface token']) {
+  for (const label of ['Main text color (shared)','Panel header / primary accent (shared)','Accent highlight (hover & active icons)']) {
     expect(view.getByRole('button',{name:label})).toBeTruthy();
   }
-  act(()=>view.getByRole('button',{name:'Accent surface token'}).click());
-  act(()=>{const inp=view.getByLabelText('Color for Accent surface token'); inp.focus();});
+  act(()=>view.getByRole('button',{name:'Accent highlight (hover & active icons)'}).click());
+  act(()=>{const inp=view.getByLabelText('Color for Accent highlight (hover & active icons)'); inp.focus();});
   expect(realErrors()).toEqual([]);
 });
 
