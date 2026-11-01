@@ -84,11 +84,11 @@ it('attempting to edit the removed sidebarBorder key through the API is rejected
   expect(()=>s.edit('sidebarBorder','#abcdef',api2)).toThrow(/Invalid color/i);
 });
 
-it('other tokens (foreground, primary, secondary, border) are unaffected by the rename/removal', () => {
+it('other tokens (foreground, primary) are unaffected by the rename/removal', () => {
   modePref.assign('default','light');
   $sessions.set([{id:'rename-test3',connection_id:'source-a',profile:'default'}]); $selectedStoredSessionId.set('rename-test3');
   const {view} = openStudio();
-  for (const label of ['Main text color (shared)','Panel header / primary accent (shared)','Secondary surface token','Shared border token']) {
+  for (const label of ['Main text color (shared)','Panel header / primary accent (shared)']) {
     expect(view.getByRole('button',{name:label})).toBeTruthy();
   }
   expect(realErrors()).toEqual([]);

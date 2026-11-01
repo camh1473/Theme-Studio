@@ -39,14 +39,15 @@ it('the 4 removed controls no longer render in main or advanced lists', () => {
   expect(realErrors()).toEqual([]);
 });
 
-it('Secondary surface token remains available and editable', () => {
+it('secondary token remains available and editable (now location-hinting label)', () => {
   modePref.assign('default','light');
   $sessions.set([{id:'dead-token-test2',connection_id:'source-a',profile:'default'}]); $selectedStoredSessionId.set('dead-token-test2');
   const {view} = openStudio();
-  const secondaryBtn = view.getByRole('button',{name:'Secondary surface token'});
+  const label = 'Drawer close-button fill (mobile sidebar, shown when open)';
+  const secondaryBtn = view.getByRole('button',{name:label});
   expect(secondaryBtn).toBeTruthy();
   act(()=>secondaryBtn.click());
-  expect(view.getByLabelText('Color for Secondary surface token')).toBeTruthy();
+  expect(view.getByLabelText('Color for '+label)).toBeTruthy();
   expect(realErrors()).toEqual([]);
 });
 
