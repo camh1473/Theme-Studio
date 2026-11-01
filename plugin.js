@@ -6,13 +6,31 @@ const copy = value => JSON.parse(JSON.stringify(value));
 const normalizeLabel = label => label.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 const scopeFor = owner => owner && typeof owner.connectionId === 'string' && owner.connectionId.trim() && typeof owner.profile === 'string' && owner.profile.trim() ? JSON.stringify([owner.connectionId,owner.profile]) : null;
 const keys = ['background','foreground','card','cardForeground','muted','mutedForeground','popover','popoverForeground','primary','primaryForeground','secondary','accent','accentForeground','border','input','ring','midground','composerRing','destructive','sidebarBackground','sidebarBorder','userBubble'];
-const labels = {background:'App background tint',foreground:'Main text color (shared)',card:'Message box & card backgrounds (shared)',sidebarBackground:'Sidebar and menu backgrounds (shared)',userBubble:'Sent message background',chatBackground:'Conversation background (not glass)',sessionsSidebarBackground:'Sessions sidebar tint',primary:'Panel header / primary accent (shared)',midground:'Welcome title & interface accent (shared)',muted:'Muted surface token',popover:'Popover surface token',primaryForeground:'Primary accent text token',secondary:'Secondary surface token',accent:'Accent surface token',accentForeground:'Accent text token',border:'Shared border token',input:'Input surface token',ring:'Focus ring token',composerRing:'Composer focus ring token',destructive:'Destructive action token',sidebarBorder:'Sidebar border token'};
-const mainColors = ['foreground','background','card','sidebarBackground','userBubble','chatBackground','sessionsSidebarBackground','primary','midground'];
+const labels = {background:'App background tint',foreground:'Main text color (shared)',card:'Message box & card backgrounds (shared)',sidebarBackground:'Sidebar and menu backgrounds (shared)',userBubble:'Sent message background',chatBackground:'Conversation background (not glass)',sessionsSidebarBackground:'Sessions sidebar tint',sessionsSidebarForeground:'Sessions sidebar text (not shared)',primary:'Panel header / primary accent (shared)',midground:'Welcome title & interface accent (shared)',muted:'Muted surface token',popover:'Popover surface token',primaryForeground:'Primary accent text token',secondary:'Secondary surface token',accent:'Accent surface token',accentForeground:'Accent text token',border:'Shared border token',input:'Input surface token',ring:'Focus ring token',composerRing:'Composer focus ring token',destructive:'Destructive action token',sidebarBorder:'Sidebar border token'};
+const mainColors = ['foreground','background','card','sidebarBackground','userBubble','chatBackground','sessionsSidebarBackground','sessionsSidebarForeground','primary','midground'];
 const advancedColors = keys.filter(k => !mainColors.includes(k) && !['cardForeground','mutedForeground','popoverForeground'].includes(k));
 const valid = t => t && typeof t.name === 'string' && /^theme-studio-[a-z0-9-]+$/.test(t.name) && typeof t.label === 'string' && t.colors && ['background','foreground','primary'].every(k => typeof t.colors[k] === 'string');
 const addChatRule = (theme, color) => { const result = copy(theme); result.customCSS = (result.customCSS || '') + '\n:root:not([data-hermes-glass]) [data-chat-surface] { --ui-chat-surface-background: ' + color + '; }'; return result; };
 
 const addSessionsRule = (theme, color) => { const result = copy(theme); result.customCSS = (result.customCSS || '') + `\n:root:not([data-hermes-glass]) [data-tour="sessions-sidebar"][data-slot="sidebar"] { --ui-sidebar-surface-background: ${color}; }\n:root[data-hermes-glass] [data-tour="sessions-sidebar"][data-slot="sidebar"] { background-color: color-mix(in srgb, ${color} var(--translucency-glass-keep, 100%), transparent); }`; return result; };
+// Text-only override: every text color actually rendered inside the sessions
+// sidebar (session titles, nav items, timestamps/meta, hover/active states,
+// loading labels) resolves -- directly or by lazy var() indirection -- from
+// one of these four custom properties (see styles.css: --ui-text-primary/
+// secondary/tertiary/quaternary are each `color-mix(in srgb, var(--ui-base)
+// N%, transparent)`, and --dt-foreground/--foreground/--color-foreground/
+// the Tailwind `text-foreground` utility all chain through
+// `var(--ui-text-primary)`). Overriding ONLY these four at this scope is
+// deliberately narrower than overriding --ui-base itself: --ui-base also
+// feeds --sidebar-edge-border and card/hover background mixes, which are
+// not text and should keep tracking the shared theme foreground, not this
+// sidebar-only text color. Same relative opacity steps as the global
+// defaults (94/74/54/36%) so the existing primary/secondary/tertiary/
+// quaternary text hierarchy inside the sidebar is preserved, just recolored.
+// Applied unconditionally in both glass and non-glass mode: unlike a flat
+// background fill, a text color has nothing to do with glass's native
+// transparency, so there is no mode-gate to reason about here.
+const addSessionsTextRule = (theme, color) => { const result = copy(theme); result.customCSS = (result.customCSS || '') + `\n:root [data-tour="sessions-sidebar"][data-slot="sidebar"] { --ui-text-primary: color-mix(in srgb, ${color} 94%, transparent); --ui-text-secondary: color-mix(in srgb, ${color} 74%, transparent); --ui-text-tertiary: color-mix(in srgb, ${color} 54%, transparent); --ui-text-quaternary: color-mix(in srgb, ${color} 36%, transparent); }`; return result; };
 
 export function createStudio(ctx) {
   let saved = ctx.storage.get('scoped-themes-v1', []);
@@ -31,15 +49,15 @@ export function createStudio(ctx) {
   function noDuplicateLabel(label, scope, exceptId = null) {
     if (saved.some(x => x.scope === scope && x.theme.name !== exceptId && normalizeLabel(x.theme.label) === normalizeLabel(label))) throw Error('Name already exists; edit existing or use different name');
   }
-  let baseline = null, draft = null, mode = 'light', previewDispose = null, previous = null, draftScope = null, chatEdited = false, sessionsEdited = false;
-  const withChatCSS = theme => { let result = chatEdited ? addChatRule(theme, chatEdited) : copy(theme); if (sessionsEdited) result = addSessionsRule(result, sessionsEdited); if (bubbleEdited) result.customCSS = (result.customCSS || '') + `\n:root .composer-human-message { --dt-user-bubble: color-mix(in srgb, ${bubbleEdited} var(--user-bubble-keep, 100%), transparent); }`; return result; };
+  let baseline = null, draft = null, mode = 'light', previewDispose = null, previous = null, draftScope = null, chatEdited = false, sessionsEdited = false, sessionsTextEdited = false;
+  const withChatCSS = theme => { let result = chatEdited ? addChatRule(theme, chatEdited) : copy(theme); if (sessionsEdited) result = addSessionsRule(result, sessionsEdited); if (sessionsTextEdited) result = addSessionsTextRule(result, sessionsTextEdited); if (bubbleEdited) result.customCSS = (result.customCSS || '') + `\n:root .composer-human-message { --dt-user-bubble: color-mix(in srgb, ${bubbleEdited} var(--user-bubble-keep, 100%), transparent); }`; return result; };
   const requireScope = api => { if (!api.scope || (api.currentScope && api.currentScope() !== api.scope)) throw Error('Active connection and profile are required, and focus must not change.'); return api.scope; };
   function clear(api) { if (previewDispose) { api.clearThemePreview(); previewDispose(); previewDispose = null; } }
-  function begin(api) { editingId = null; const scope = requireScope(api); clear(api); chatEdited = false; sessionsEdited = false; bubbleEdited = false; mode = api.resolvedMode; baseline = copy(api.theme); if (mode === 'dark') baseline.darkColors = copy(api.theme.colors); else if (!baseline.darkColors) baseline.darkColors = copy(api.theme.colors); draft = copy(baseline); previous = api.themeName; draftScope = scope; return copy(draft); }
+  function begin(api) { editingId = null; const scope = requireScope(api); clear(api); chatEdited = false; sessionsEdited = false; sessionsTextEdited = false; bubbleEdited = false; mode = api.resolvedMode; baseline = copy(api.theme); if (mode === 'dark') baseline.darkColors = copy(api.theme.colors); else if (!baseline.darkColors) baseline.darkColors = copy(api.theme.colors); draft = copy(baseline); previous = api.themeName; draftScope = scope; return copy(draft); }
   function beginSaved(name, api) {
     const scope = requireScope(api); refresh(); const entry = saved.find(x => x.scope === scope && x.theme.name === name);
     if (!entry) throw Error('Theme is not saved for this connection and profile.');
-    clear(api); chatEdited = false; sessionsEdited = false; bubbleEdited = false; mode = api.resolvedMode;
+    clear(api); chatEdited = false; sessionsEdited = false; sessionsTextEdited = false; bubbleEdited = false; mode = api.resolvedMode;
     baseline = copy(entry.theme); draft = copy(entry.theme); previous = api.themeName; draftScope = scope; editingId = name;
     return copy(draft);
   }
@@ -59,7 +77,7 @@ export function createStudio(ctx) {
     const dispose = registrations.get(editingId);
     try { if (dispose) dispose(); registrations.delete(editingId); registrations.set(editingId, ctx.register({id:editingId,area:THEMES_AREA,data:copy(theme)})); }
     catch (e) { throw Error('Saved, but registration failed; reload the plugin.'); }
-    baseline = copy(theme); draft = copy(theme); chatEdited = false; sessionsEdited = false; bubbleEdited = false; return editingId;
+    baseline = copy(theme); draft = copy(theme); chatEdited = false; sessionsEdited = false; sessionsTextEdited = false; bubbleEdited = false; return editingId;
   }
   function remove(name, api) {
     const scope = requireScope(api); if (typeof api.themeName !== 'string' || !api.themeName) throw Error('Active theme is unknown; cannot delete.');
@@ -87,16 +105,18 @@ export function createStudio(ctx) {
   }
   const requireDraft = api => { if (!draft || requireScope(api) !== draftScope) throw Error('Profile changed; start editing again.'); if (api.resolvedMode !== mode) throw Error('Mode changed; start editing again.'); };
   function edit(key, color, api) {
-    requireDraft(api); if (!(keys.includes(key) || key === 'chatBackground' || key === 'sessionsSidebarBackground') || !/^#[0-9a-f]{6}$/i.test(color)) throw Error('Invalid color.');
+    requireDraft(api); if (!(keys.includes(key) || key === 'chatBackground' || key === 'sessionsSidebarBackground' || key === 'sessionsSidebarForeground') || !/^#[0-9a-f]{6}$/i.test(color)) throw Error('Invalid color.');
     if (key === 'sessionsSidebarBackground') { sessionsEdited = color; draft.sessionsSidebarBackground = color; paint(api); return copy(draft); }
+    if (key === 'sessionsSidebarForeground') { sessionsTextEdited = color; draft.sessionsSidebarForeground = color; paint(api); return copy(draft); }
     if (key === 'chatBackground') { chatEdited = color; draft.chatBackground = color; paint(api); return copy(draft); }
     const field = mode === 'dark' ? 'darkColors' : 'colors';
     if (!draft[field]) draft[field] = copy(draft.colors);
     draft[field][key] = color; if (key === 'userBubble') bubbleEdited = color; paint(api); return copy(draft);
   }
   function resetItem(key, api) {
-    requireDraft(api); if (!(keys.includes(key) || key === 'chatBackground' || key === 'sessionsSidebarBackground')) throw Error('Invalid color.');
+    requireDraft(api); if (!(keys.includes(key) || key === 'chatBackground' || key === 'sessionsSidebarBackground' || key === 'sessionsSidebarForeground')) throw Error('Invalid color.');
     if (key === 'sessionsSidebarBackground') { sessionsEdited = false; if (Object.prototype.hasOwnProperty.call(baseline, key)) draft[key] = baseline[key]; else delete draft[key]; paint(api); return copy(draft); }
+    if (key === 'sessionsSidebarForeground') { sessionsTextEdited = false; if (Object.prototype.hasOwnProperty.call(baseline, key)) draft[key] = baseline[key]; else delete draft[key]; paint(api); return copy(draft); }
     if (key === 'chatBackground') { chatEdited = false; if (Object.prototype.hasOwnProperty.call(baseline, key)) draft[key] = baseline[key]; else delete draft[key]; paint(api); return copy(draft); }
     const field = mode === 'dark' ? 'darkColors' : 'colors';
     const original = baseline[field] || baseline.colors; if (key === 'userBubble') bubbleEdited = false;
@@ -104,8 +124,8 @@ export function createStudio(ctx) {
     if (Object.prototype.hasOwnProperty.call(original,key)) draft[field][key] = original[key]; else delete draft[field][key];
     paint(api); return copy(draft);
   }
-  function revert(api) { clear(api); chatEdited = false; sessionsEdited = false; bubbleEdited = false; draft = baseline ? copy(baseline) : null; return draft && copy(draft); }
-  function reset(api) { requireDraft(api); chatEdited = false; sessionsEdited = false; bubbleEdited = false; draft = copy(baseline); paint(api); return copy(draft); }
+  function revert(api) { clear(api); chatEdited = false; sessionsEdited = false; sessionsTextEdited = false; bubbleEdited = false; draft = baseline ? copy(baseline) : null; return draft && copy(draft); }
+  function reset(api) { requireDraft(api); chatEdited = false; sessionsEdited = false; sessionsTextEdited = false; bubbleEdited = false; draft = copy(baseline); paint(api); return copy(draft); }
   function save(label, api) {
     if (saving) throw Error('Save already in progress.');
     saving = true;
@@ -163,12 +183,13 @@ function Studio({studio,ctx,markerEvents,bgImageEvents}) {
   useEffect(() => { if (draftMode.current && draftMode.current !== api.resolvedMode) { studio.revert(apiRef.current); draftMode.current = null; setDraft(null); setCopiedColor(null); setMessage('Mode changed; editing cancelled. Start editing again.'); } }, [studio, api.resolvedMode]);
   const act = fn => { try { fn(); } catch(e) { setConfirmation(''); setMessage(e.message); } };
   const palette = draft && (api.resolvedMode === 'dark' ? (draft.darkColors || draft.colors) : draft.colors);
-  const selectedValue = selected === 'chatBackground' || selected === 'sessionsSidebarBackground' ? draft?.[selected] : palette?.[selected];
+  const draftKeys = ['chatBackground', 'sessionsSidebarBackground', 'sessionsSidebarForeground'];
+  const selectedValue = draftKeys.includes(selected) ? draft?.[selected] : palette?.[selected];
   const color = /^#[0-9a-f]{6}$/i.test(selectedValue || '') ? selectedValue : '#808080';
   const canCopy = /^#[0-9a-f]{6}$/i.test(selectedValue || '');
   const canApplyCopy = !!copiedColor && copiedColor.scope === api.scope && copiedColor.mode === api.resolvedMode && copiedColor.source !== selected;
   const button = (label, onClick, disabled=false) => jsx('button',{type:'button',onClick,disabled,style:{...ui.button,opacity:disabled?0.5:1,cursor:disabled?'not-allowed':'pointer'},children:label});
-  const colorButton = k => jsx('button',{type:'button',onClick:()=>setSelected(k),title:(k === 'chatBackground' || k === 'sessionsSidebarBackground' ? draft[k] : palette[k]) || 'Uses theme fallback',style:{...ui.button,textAlign:'left',border:k===selected?'2px solid var(--ui-accent)':'1px solid var(--ui-stroke-secondary)'},children:[jsx('span',{style:{display:'inline-block',width:14,height:14,marginRight:5,background:(k === 'chatBackground' || k === 'sessionsSidebarBackground' ? draft[k] : palette[k]) || 'transparent'}}),labels[k]]},k);
+  const colorButton = k => jsx('button',{type:'button',onClick:()=>setSelected(k),title:(draftKeys.includes(k) ? draft[k] : palette[k]) || 'Uses theme fallback',style:{...ui.button,textAlign:'left',border:k===selected?'2px solid var(--ui-accent)':'1px solid var(--ui-stroke-secondary)'},children:[jsx('span',{style:{display:'inline-block',width:14,height:14,marginRight:5,background:(draftKeys.includes(k) ? draft[k] : palette[k]) || 'transparent'}}),labels[k]]},k);
   return jsx('div',{style:{boxSizing:'border-box',padding:'24px clamp(16px, 4vw, 40px)',overflow:'auto',height:'100%',color:'var(--ui-text-primary)',fontSize:14,lineHeight:1.5,maxWidth:1000},children:[
     jsx('h1',{style:{fontSize:28,fontWeight:700,lineHeight:1.2,margin:'0 0 8px'},children:'Theme Studio'}),
     jsx('p',{style:ui.text,children:'Edit a copy of the current theme. Preview is temporary; saved themes are local to this plugin.'}),
@@ -176,7 +197,7 @@ function Studio({studio,ctx,markerEvents,bgImageEvents}) {
     draft && jsx('section',{style:ui.section,children:[jsx('h2',{style:ui.heading,children:'Edit colors'}),
       jsx('p',{style:ui.text,children:'Click an area of the preview, or select a color from the list. The preview is an approximation; actual surfaces, glass, and shared colors can look different.'}),
       jsx('div',{style:{display:'flex',minHeight:200,border:'1px solid var(--ui-stroke-secondary)',borderRadius:8,overflow:'hidden',maxWidth:650,backgroundColor:palette.background,backgroundImage:glass ? 'linear-gradient(color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent), color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent))' : 'none',color:palette.foreground},children:[
-        jsx('button',{type:'button','aria-label':'Select sessions sidebar tint',onClick:()=>setSelected('sessionsSidebarBackground'),style:{width:'27%',background:glass ? 'color-mix(in srgb, '+(draft.sessionsSidebarBackground || 'transparent')+' var(--translucency-glass-keep, 100%), transparent)' : (draft.sessionsSidebarBackground || palette.sidebarBackground || palette.muted || palette.background),color:palette.foreground,border:0,borderRight:'1px solid var(--ui-stroke-secondary)',padding:14,textAlign:'left',cursor:'pointer'},children:['Chats',jsx('div',{style:{marginTop:20,color:palette.primary},children:'● Current chat'})]}),
+        jsx('button',{type:'button','aria-label':'Select sessions sidebar tint',onClick:()=>setSelected('sessionsSidebarBackground'),style:{width:'27%',background:glass ? 'color-mix(in srgb, '+(draft.sessionsSidebarBackground || 'transparent')+' var(--translucency-glass-keep, 100%), transparent)' : (draft.sessionsSidebarBackground || palette.sidebarBackground || palette.muted || palette.background),color:draft.sessionsSidebarForeground || palette.foreground,border:0,borderRight:'1px solid var(--ui-stroke-secondary)',padding:14,textAlign:'left',cursor:'pointer'},children:[jsx('span',{onClick:e=>{e.stopPropagation();setSelected('sessionsSidebarForeground');},'aria-label':'Select sessions sidebar text color',children:'Chats'}),jsx('div',{style:{marginTop:20,color:palette.primary},children:'● Current chat'})]}),
         jsx('div',{style:{flex:1,padding:16},children:[
           jsx('button',{type:'button','aria-label':'Select conversation background',onClick:()=>setSelected('chatBackground'),style:{display:'block',width:'100%',padding:10,background:draft.chatBackground || palette.background,color:palette.foreground,border:'1px dashed currentColor',cursor:'pointer'},children:'Chat background'}),
           jsx('button',{type:'button','aria-label':'Select main text color',onClick:()=>setSelected('foreground'),style:{display:'block',marginTop:12,background:'transparent',color:palette.foreground,border:0,cursor:'pointer'},children:'Hello! Click this text to customize it.'}),
@@ -188,6 +209,7 @@ function Studio({studio,ctx,markerEvents,bgImageEvents}) {
       jsx('details',{style:ui.details,children:[jsx('summary',{style:{fontWeight:600,cursor:'pointer',width:'fit-content'},children:'Advanced shared color tokens'}),jsx('p',{children:'These shared tokens may affect multiple UI elements and may not appear in the preview.'}),jsx('div',{style:{display:'flex',flexWrap:'wrap',gap:6},children:advancedColors.map(k=>colorButton(k))})]}),
       jsx('p',{style:{...ui.label,display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'},children:[labels[selected],' ',jsx('input',{style:{...ui.field,width:54,padding:3},type:'color',value:color,onChange:e=>act(()=>setDraft(studio.edit(selected,e.target.value,api))), 'aria-label':'Color for '+labels[selected]}),' ',button('Reset selected color',()=>act(()=>setDraft(studio.resetItem(selected,api))))]}),
       selected === 'sessionsSidebarBackground' && jsx('p',{style:ui.text,children:'Selected tint: '+(selectedValue || 'not set (theme fallback)')+'. Rendered sample: '+(glass ? 'approximation using the native glass tint setting over the window tint and a simulated backdrop; native glass and wallpaper differ.' : 'approximation in non-glass mode.') }),
+      selected === 'sessionsSidebarForeground' && jsx('p',{style:ui.text,children:'Selected text color: '+(selectedValue || 'not set (uses the shared main text color)')+'. This recolors session titles, nav labels, timestamps, and hover/active text inside the Sessions sidebar only — it does not affect the main chat/conversation text, which keeps using the shared Main text color. Caveat: this color and the Sessions sidebar tint above are each independently editable, so nothing guarantees they stay readable together — pick a text color with enough contrast against your chosen (or default) sidebar background yourself.'}),
       selectedValue && !/^#[0-9a-f]{6}$/i.test(selectedValue) ? jsx('p',{children:'Current value: '+selectedValue+'. This is not a six-digit RGB color; the picker shows a placeholder, not the current color.'}) : !selectedValue ? jsx('p',{children:'This token uses a theme fallback; the picker shows a placeholder, not the current color.'}) : null,
       jsx('div',{style:{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'},children:[button('Copy color',()=>act(()=>{if (!api.scope || api.currentScope() !== api.scope || draftMode.current !== api.resolvedMode || !canCopy) throw Error('Cannot copy: focus, mode, or color changed.'); setCopiedColor({value:selectedValue,source:selected,scope:api.scope,mode:api.resolvedMode});}),!canCopy),button('Apply copied color',()=>act(()=>{if (!canApplyCopy || api.currentScope() !== api.scope || draftMode.current !== api.resolvedMode) throw Error('Cannot apply: focus or mode changed.'); setDraft(studio.edit(selected,copiedColor.value,api));}),!canApplyCopy),jsx('span',{'aria-live':'polite',children:copiedColor ? 'Copied color: '+copiedColor.value+' from '+labels[copiedColor.source]+(copiedColor.source === selected ? ' — select a different target.' : '') : 'No copied color. Copy a six-digit hex color, then select a different target.'})]}),
       !canCopy && jsx('p',{style:ui.text,children:'Copy unavailable: the selected value is unset or is not a six-digit hex color. Choose a color first.'}),
@@ -199,7 +221,7 @@ function Studio({studio,ctx,markerEvents,bgImageEvents}) {
     jsx('p',{role:'status','aria-label':'Theme status',children:message}),
     confirmation && jsx('div',{role:'status','aria-label':'Save confirmation',style:{position:'fixed',bottom:24,right:24,zIndex:9999,padding:16,border:'1px solid var(--ui-stroke-secondary)',borderRadius:8,background:'var(--ui-bg-editor)',color:'var(--ui-text-primary)',boxShadow:'0 4px 16px #0005'},children:[jsx('span',{children:confirmation}), ' ',button('Dismiss confirmation',()=>setConfirmation(''))]}),
     jsx('details',{style:ui.details,children:[jsx('summary',{style:{fontWeight:600,cursor:'pointer'},children:'How themes and preview work'}),jsx('p',{style:ui.text,children:'Saved designs follow the focused chat owner (connection and profile). Apply and restore require that owner to match the active gateway profile. Preview and applied appearance paint the desktop window; contributed themes also appear in the global picker. Switching chat focus does not create a per-chat theme.'}),
-    jsx('p',{children:'Sessions sidebar color is independent. In glass mode it layers the chosen color over the existing material using the native glass transparency setting; the displayed color will vary with the backdrop and tint settings. Chat background is independent and applies in both modes outside glass mode; glass mode keeps its original appearance. Sidebar and menu backgrounds share a semantic token used in multiple surfaces. The panel header / primary accent is a shared primary token and also affects other surfaces. The working-session indicator and other interactive areas share an accent token. Other colors are shared semantic tokens. The editor copies the currently painted palette, not the original full light/dark theme; switching modes may not preserve the original appearance. The picker accepts six-digit RGB; existing non-hex values remain unchanged until edited.'})]}),
+    jsx('p',{children:'Sessions sidebar color is independent. In glass mode it layers the chosen color over the existing material using the native glass transparency setting; the displayed color will vary with the backdrop and tint settings. Sessions sidebar text is also independent of the shared main text color and applies in both glass and non-glass mode; since the sidebar background tint is independently customizable too, pick colors with enough contrast for your own setup. Chat background is independent and applies in both modes outside glass mode; glass mode keeps its original appearance. Sidebar and menu backgrounds share a semantic token used in multiple surfaces. The panel header / primary accent is a shared primary token and also affects other surfaces. The working-session indicator and other interactive areas share an accent token. Other colors are shared semantic tokens. The editor copies the currently painted palette, not the original full light/dark theme; switching modes may not preserve the original appearance. The picker accepts six-digit RGB; existing non-hex values remain unchanged until edited.'})]}),
     jsx(MarkerPage,{ctx,events:markerEvents}),
     jsx(SoundPage,{ctx}),
     jsx(BackgroundImagePage,{ctx,events:bgImageEvents})
@@ -207,6 +229,13 @@ function Studio({studio,ctx,markerEvents,bgImageEvents}) {
 }
 
 const states = { unread: ['Finished, unread','bg-(--ui-success)'], working: ['Working','bg-(--ui-accent)'], input: ['Needs input','bg-amber-500'], background: ['Background work / sub-agent','border-(--ui-text-tertiary)'] };
+// Only consumer left: handleSoundCompletionEvent, which deliberately scopes
+// by the completion EVENT's own (connection, profile) rather than UI focus
+// -- see that function's comment. The UI-facing marker/sound settings pages
+// and the marker CSS injector (ScopeStyle/MarkerPage/SoundPage) resolve scope
+// via focusedSessionOwner + scopeFor() instead (see Studio's own scopeFor
+// usage), producing the IDENTICAL JSON key shape, so existing stored data
+// under either resolver reads back unchanged.
 const markerScopeFor = (connection, profile) => typeof connection === 'string' && connection.trim() && typeof profile === 'string' && profile.trim() ? JSON.stringify([connection, profile]) : null;
 const goodIcon = s => typeof s === 'string' && [...s].length <= 16 && !/[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(s);
 const goodColor = s => typeof s === 'string' && (s === '' || /^#[0-9a-f]{6}$/i.test(s));
@@ -439,6 +468,33 @@ export function saveSoundSettings(ctx, scope, settings) {
 // Mirrors core's decision shape (mute check, "None" bails early) but scoped
 // per (connection, profile): a profile with no saved entry stays silent
 // rather than falling back to some other profile's sound.
+//
+// DELIBERATELY NOT switched to focusedSessionOwner, unlike the marker/
+// background-image injectors. Those features paint something the user is
+// currently LOOKING AT, so they must follow which chat has UI focus. This
+// handler instead answers "which profile just finished", which is a fact
+// carried by the EVENT itself (event.profile), independent of whatever tab
+// happens to be focused when the event arrives -- a background/non-focused
+// bot finishing must still play ITS OWN configured sound, not the focused
+// tab's. Using focusedSessionOwner here would be wrong: it would play the
+// focused tab's sound for every completion regardless of which profile
+// actually finished, or play nothing when the finishing profile isn't the
+// focused one. event.profile already does the right thing; only degrades to
+// the ambient host.state.profile when the event itself carries no profile.
+// connectionId is left on the ambient host.state.connectionId.get() on
+// purpose: in this app's model a single active connection owns the live
+// gateway socket (Bot-mode tabs are different PROFILES on that same
+// connection, not separate connections -- see focusedSessionOwner's own doc
+// comment in sdk/index.ts), so every event reaching this handler already
+// belongs to the one ambient connection; there is no second connectionId to
+// disambiguate against.
+// connectionId is left on the ambient host.state.connectionId.get() on
+// purpose: in this app's model a single active connection owns the live
+// gateway socket (Bot-mode tabs are different PROFILES on that same
+// connection, not separate connections -- see focusedSessionOwner's own doc
+// comment in sdk/index.ts), so every event reaching this handler already
+// belongs to the one ambient connection; there is no second connectionId to
+// disambiguate against.
 export function handleSoundCompletionEvent(ctx, event) {
   try {
     const connection = host.state.connectionId.get();
@@ -455,14 +511,17 @@ function soundButton(label, onClick, disabled) {
   return jsx('button', {type:'button', onClick, disabled, style:{...ui.button, opacity:disabled?0.5:1, cursor:disabled?'not-allowed':'pointer'}, children:label});
 }
 export function SoundPage({ctx}) {
-  const connection = useValue(host.state.connectionId), profile = useValue(host.state.profile), scope = markerScopeFor(connection, profile);
+  const owner = useValue(host.state.focusedSessionOwner);
+  const connection = useValue(host.state.connectionId), profile = useValue(host.state.profile);
+  const scope = scopeFor(owner) || scopeFor({connectionId:connection, profile});
+  const currentScope = () => scopeFor(host.state.focusedSessionOwner?.get()) || scopeFor({connectionId:host.state.connectionId.get(), profile:host.state.profile.get()});
   const [draft, setDraft] = useState(DEFAULT_SOUND_SETTINGS);
   const [message, setMessage] = useState('');
   const [reminderDismissed, setReminderDismissed] = useState(true);
   useEffect(() => { setDraft(readSoundSettings(ctx, scope)); setMessage(''); setReminderDismissed(readSoundReminderDismissed(ctx, scope)); }, [ctx, scope]);
   const edit = (field, value) => setDraft(old => ({...old, [field]: value}));
   const save = () => { try {
-    if (!scope || markerScopeFor(host.state.connectionId.get(), host.state.profile.get()) !== scope) throw Error('Active connection and profile are required.');
+    if (!scope || currentScope() !== scope) throw Error('Active connection and profile are required.');
     setDraft(saveSoundSettings(ctx, scope, draft));
     setMessage('Saved for the active connection and profile.');
   } catch (e) { setMessage(e.message); } };
@@ -739,17 +798,22 @@ export function BackgroundImagePage({ctx, events}) {
   ]});
 }
 function ScopeStyle({ctx,events}) {
-  const connection=useValue(host.state.connectionId), profile=useValue(host.state.profile), scope=markerScopeFor(connection,profile);
+  const owner=useValue(host.state.focusedSessionOwner);
+  const connection=useValue(host.state.connectionId), profile=useValue(host.state.profile);
+  const scope=scopeFor(owner) || scopeFor({connectionId:connection,profile});
   useEffect(()=>{ const el=document.createElement('style'); el.dataset.themeStudioSessionMarkers=''; document.head.appendChild(el); const update=()=>{el.textContent=markerCSS(read(ctx,scope));}; events.addEventListener('change',update); update(); return ()=>{events.removeEventListener('change',update);el.remove();}; },[ctx,events,scope]);
   return null;
 }
 function MarkerPage({ctx,events}) {
-  const connection=useValue(host.state.connectionId), profile=useValue(host.state.profile), scope=markerScopeFor(connection,profile);
+  const owner=useValue(host.state.focusedSessionOwner);
+  const connection=useValue(host.state.connectionId), profile=useValue(host.state.profile);
+  const scope=scopeFor(owner) || scopeFor({connectionId:connection,profile});
+  const currentScope=()=>scopeFor(host.state.focusedSessionOwner?.get()) || scopeFor({connectionId:host.state.connectionId.get(),profile:host.state.profile.get()});
   const [draft,setDraft]=useState({}), [message,setMessage]=useState('');
   useEffect(()=>{setDraft(read(ctx,scope));setMessage('');},[ctx,scope]);
   const edit=(key,field,value)=>setDraft(old=>({...old,[key]:{enabled:false,icon:'',color:'',...old[key],[field]:value}}));
   const save=()=>{ try {
-    if (!scope || markerScopeFor(host.state.connectionId.get(),host.state.profile.get()) !== scope) throw Error('Active connection and profile are required.');
+    if (!scope || currentScope() !== scope) throw Error('Active connection and profile are required.');
     for (const key of Object.keys(states)) { const v=draft[key]; if (v && (typeof v.enabled !== 'boolean' || !goodIcon(v.icon) || !goodColor(v.color))) throw Error('Use up to 16 Unicode characters, no controls, and a six-digit color.'); }
     const all=ctx.storage.get('markers-v1', {}); if (!all || typeof all !== 'object' || Array.isArray(all)) throw Error('Invalid stored settings; not overwritten.');
     const next={...all,[scope]:draft}; ctx.storage.set('markers-v1',next); if (JSON.stringify(ctx.storage.get('markers-v1',null)) !== JSON.stringify(next)) throw Error('Storage failed; settings not confirmed.'); events.dispatchEvent(new Event('change')); setMessage('Saved for the active connection and profile.');
