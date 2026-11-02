@@ -477,6 +477,7 @@ export function dismissSoundReminder(ctx, scope) {
   const base = all && typeof all === 'object' && !Array.isArray(all) ? all : {};
   const next = {...base, [scope]: true};
   ctx.storage.set('sound-reminder-dismissed-v1', next);
+  if (JSON.stringify(ctx.storage.get('sound-reminder-dismissed-v1', null)) !== JSON.stringify(next)) throw Error('Storage failed; dismissal was not confirmed.');
   return next;
 }
 export function readSoundSettings(ctx, scope) {
@@ -565,7 +566,7 @@ export function SoundPage({ctx}) {
   // profile) and stored via ctx.storage, not a core setting -- this never
   // touches the actual completion-sound value, only whether this reminder
   // has been acknowledged for this scope.
-  const dismissReminder = () => { try { if (scope) dismissSoundReminder(ctx, scope); } finally { setReminderDismissed(true); } };
+  const dismissReminder = () => { try { if (scope) dismissSoundReminder(ctx, scope); setReminderDismissed(true); } catch (e) { setMessage(e.message); } };
   const openSettings = () => { openNotificationSettings(); };
   // Shown whenever the CONFIGURED (saved) sound for this scope is non-None
   // and the user hasn't dismissed it yet for this scope -- not for every
@@ -587,13 +588,23 @@ export function SoundPage({ctx}) {
   // guard whichever promise resolves LAST wins even if it was the STALE
   // (first) click -- silently overwriting the user's actual, later choice.
   // Only the result of the most-recently-STARTED call is ever applied.
+  // Policy (documented, deliberate): a picker result lands in the scope
+  // that was FOCUSED when the pick STARTED, never whatever scope happens
+  // to be focused when the native dialog resolves. If focus moved on in
+  // between, the result is dropped with a message rather than silently
+  // bleeding the old scope's chosen path into the new scope's in-memory
+  // draft (which could later get saved under the wrong profile). Same
+  // generation-counter guard as before also still covers the plain
+  // double-click case (two overlapping picks in the SAME scope).
   const pickFileGeneration = useRef(0);
   const pickFile = async () => {
     if (!ctx.os || typeof ctx.os.pickOpenPath !== 'function') { setMessage('File picker unavailable on this host.'); return; }
     const myGeneration = ++pickFileGeneration.current;
+    const pickScope = scope;
     try {
       const path = await ctx.os.pickOpenPath({ title: 'Choose a notification sound', filters: [{ extensions: ['mp3', 'wav'], name: 'Audio' }] });
       if (myGeneration !== pickFileGeneration.current) return; // a newer click superseded this one; drop the stale result
+      if (currentScope() !== pickScope) { setMessage('Focus changed before the file was chosen; choose again for this profile.'); return; }
       if (path) { edit('customPath', path); setMessage('Chosen: ' + path); }
     } catch (e) { if (myGeneration === pickFileGeneration.current) setMessage(e.message); }
   };
@@ -804,13 +815,18 @@ export function BackgroundImagePage({ctx, events}) {
   }, [draft.path]);
   // Same stale-overwrite guard as SoundPage's pickFile (see its comment):
   // only the most-recently-STARTED pick wins if two resolve out of order.
+  // Same documented policy as SoundPage.pickFile: a result lands in the
+  // scope focused when the pick STARTED, never the scope focused when the
+  // dialog resolves -- drop (with a message) if focus moved on meanwhile.
   const pickFileGeneration = useRef(0);
   const pickFile = async () => {
     if (!ctx.os || typeof ctx.os.pickOpenPath !== 'function') { setMessage('File picker unavailable on this host.'); return; }
     const myGeneration = ++pickFileGeneration.current;
+    const pickScope = scope;
     try {
       const path = await ctx.os.pickOpenPath({ title: 'Choose a background image', filters: [{ extensions: BG_IMAGE_EXTENSIONS, name: 'Images' }] });
       if (myGeneration !== pickFileGeneration.current) return; // a newer click superseded this one; drop the stale result
+      if (currentScope() !== pickScope) { setMessage('Focus changed before the image was chosen; choose again for this profile.'); return; }
       if (path) { setDraft(old => ({...old, path})); setMessage('Chosen: ' + path); }
     } catch (e) { if (myGeneration === pickFileGeneration.current) setMessage(e.message); }
   };
