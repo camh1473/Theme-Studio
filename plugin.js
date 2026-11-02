@@ -32,6 +32,41 @@ const addSessionsRule = (theme, color) => { const result = copy(theme); result.c
 // transparency, so there is no mode-gate to reason about here.
 const addSessionsTextRule = (theme, color) => { const result = copy(theme); result.customCSS = (result.customCSS || '') + `\n:root [data-tour="sessions-sidebar"][data-slot="sidebar"] { --ui-text-primary: color-mix(in srgb, ${color} 94%, transparent); --ui-text-secondary: color-mix(in srgb, ${color} 74%, transparent); --ui-text-tertiary: color-mix(in srgb, ${color} 54%, transparent); --ui-text-quaternary: color-mix(in srgb, ${color} 36%, transparent); }`; return result; };
 
+// Hardening stopgap for a confirmed CORE bug: ProfileStatusDot (the
+// per-profile "finished in background" dot, profile-switcher.tsx) renders
+// correctly in the DOM at every rail tile site -- ProfileSquare, RestSquare,
+// ProfilePill -- but each tile's own <button> gets dimmed via plain CSS
+// `opacity` while inactive/at-rest/muted, and `opacity` composites the whole
+// subtree, so a child can never opt back in. Confirmed covered by this rule:
+// RestSquare (own stable `data-slot="profile-rail-rest-square"`) AND
+// ProfileSquare, which carries no stable data-slot/data-tour of its own
+// (its only extra attrs are dnd-kit's `{...attributes}`/`{...listeners}`
+// spread) -- found instead via its stable ANCESTOR, the whole rail's own
+// `data-tour="profile-rail"` wrapper, which also happens to contain
+// RestSquare and ProfilePill. One ancestor-scoped `:has()` rule therefore
+// reaches all three tile kinds at once; it is gated on the dot's own stable
+// `data-slot="profile-status-dot"` actually being present, so it never
+// touches a tile that has no dot -- this is not a blanket un-dim of the rail.
+// No known gap: unlike the original investigation assumed, a stable
+// selector WAS found for ProfileSquare, so it is not left undocumented/
+// uncovered here.
+export const PROFILE_DOT_HARDENING_CSS = '[data-tour="profile-rail"] button:has([data-slot="profile-status-dot"]) { opacity: 1 !important; }';
+// Mounted the same way as mountBackgroundImageStyle below -- imperatively
+// from register(ctx), torn down only via ctx.onDispose -- because this is a
+// GLOBAL UI fix with no per-profile scope to track and no dynamic input to
+// react to (the CSS text is a constant), so it needs neither a statusBar
+// render contribution's mount lifecycle nor any subscription at all.
+function mountProfileDotHardeningStyle(ctx) {
+  const el = document.createElement('style');
+  el.dataset.themeStudioProfileDotFix = '';
+  el.textContent = PROFILE_DOT_HARDENING_CSS;
+  document.head.appendChild(el);
+  // Same defensive guard as mountBackgroundImageStyle's own ctx.onDispose
+  // check -- several test files call register() with a minimal mock ctx
+  // that has no onDispose, and an unguarded call would throw there.
+  if (typeof ctx.onDispose === 'function') ctx.onDispose(() => el.remove());
+}
+
 export function createStudio(ctx) {
   let saved = ctx.storage.get('scoped-themes-v1', []);
   if (!Array.isArray(saved)) saved = [];
@@ -222,6 +257,7 @@ function Studio({studio,ctx,markerEvents,bgImageEvents}) {
     confirmation && jsx('div',{role:'status','aria-label':'Save confirmation',style:{position:'fixed',bottom:24,right:24,zIndex:9999,padding:16,border:'1px solid var(--ui-stroke-secondary)',borderRadius:8,background:'var(--ui-bg-editor)',color:'var(--ui-text-primary)',boxShadow:'0 4px 16px #0005'},children:[jsx('span',{children:confirmation}), ' ',button('Dismiss confirmation',()=>setConfirmation(''))]}),
     jsx('details',{style:ui.details,children:[jsx('summary',{style:{fontWeight:600,cursor:'pointer'},children:'How themes and preview work'}),jsx('p',{style:ui.text,children:'Saved designs follow the focused chat owner (connection and profile). Apply and restore require that owner to match the active gateway profile. Preview and applied appearance paint the desktop window; contributed themes also appear in the global picker. Switching chat focus does not create a per-chat theme.'}),
     jsx('p',{children:'Sessions sidebar color is independent. In glass mode it layers the chosen color over the existing material using the native glass transparency setting; the displayed color will vary with the backdrop and tint settings. Sessions sidebar text is also independent of the shared main text color and applies in both glass and non-glass mode; since the sidebar background tint is independently customizable too, pick colors with enough contrast for your own setup. Chat background is independent and applies in both modes outside glass mode; glass mode keeps its original appearance. Sidebar and menu backgrounds share a semantic token used in multiple surfaces. The panel header / primary accent is a shared primary token and also affects other surfaces. The working-session indicator and other interactive areas share an accent token. Other colors are shared semantic tokens. The editor copies the currently painted palette, not the original full light/dark theme; switching modes may not preserve the original appearance. The picker accepts six-digit RGB; existing non-hex values remain unchanged until edited.'})]}),
+    jsx('p',{style:ui.text,'aria-label':'Background-task indicator hardening note',children:'Hardening (always on, no setting): Hermes dims profile tiles while inactive/at-rest/muted by applying CSS opacity to the whole tile, which also hides that profile’s "finished in background" dot. This forces full opacity back on any tile -- rail squares, at-rest fleet squares, and pill-shaped tiles -- only while it is actually showing that dot, so the dot stays visible without un-dimming anything else.'}),
     jsx(MarkerPage,{ctx,events:markerEvents}),
     jsx(SoundPage,{ctx}),
     jsx(BackgroundImagePage,{ctx,events:bgImageEvents})
@@ -844,6 +880,12 @@ export default { id:'theme-studio', name:'Theme Studio', defaultEnabled:false, r
   // comment for why) -- mounted directly so it outlives any chat view,
   // including a Bot's, and any statusbar visibility toggle.
   mountBackgroundImageStyle(ctx, bgImageEvents);
+  // Always-on hardening fix -- see PROFILE_DOT_HARDENING_CSS's own comment.
+  // No toggle: it is purely corrective CSS (forces opacity:1 on a tile ONLY
+  // when it already contains the dot), so there is no legitimate "off" state
+  // a user would want -- same precedent as the always-on [data-chat-surface]
+  // transparent-children hardening rule above.
+  mountProfileDotHardeningStyle(ctx);
   ctx.register({id:'page',area:ROUTES_AREA,data:{path:'/theme-studio'},render:()=>jsx(Studio,{studio,ctx,markerEvents,bgImageEvents})});
   ctx.register({id:'nav',area:SIDEBAR_NAV_AREA,data:{path:'/theme-studio',label:'Theme Studio',codicon:'symbol-color'}});
   if (typeof host.onEvent === 'function') host.onEvent('message.complete', event => handleSoundCompletionEvent(ctx, event));
