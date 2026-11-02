@@ -545,12 +545,21 @@ export function SoundPage({ctx}) {
   // -- apps/desktop/src/contrib/plugin.ts PluginOs). Resolves the chosen
   // PATH directly (or null on cancel/unavailable) — no File object, no
   // bytes, no webUtils.getPathForFile needed.
+  // Generation counter guards against a double-click race: two overlapping
+  // pickOpenPath() calls can resolve out of order (the first click's native
+  // dialog can take longer to close than the second's), and without this
+  // guard whichever promise resolves LAST wins even if it was the STALE
+  // (first) click -- silently overwriting the user's actual, later choice.
+  // Only the result of the most-recently-STARTED call is ever applied.
+  const pickFileGeneration = useRef(0);
   const pickFile = async () => {
     if (!ctx.os || typeof ctx.os.pickOpenPath !== 'function') { setMessage('File picker unavailable on this host.'); return; }
+    const myGeneration = ++pickFileGeneration.current;
     try {
       const path = await ctx.os.pickOpenPath({ title: 'Choose a notification sound', filters: [{ extensions: ['mp3', 'wav'], name: 'Audio' }] });
+      if (myGeneration !== pickFileGeneration.current) return; // a newer click superseded this one; drop the stale result
       if (path) { edit('customPath', path); setMessage('Chosen: ' + path); }
-    } catch (e) { setMessage(e.message); }
+    } catch (e) { if (myGeneration === pickFileGeneration.current) setMessage(e.message); }
   };
   return jsx('section', {style:ui.section, children:[
     jsx('h2', {style:ui.heading, children:'Notification sound'}),
@@ -757,12 +766,17 @@ export function BackgroundImagePage({ctx, events}) {
     resolveBackgroundImageDataUrl(draft.path).then(url => { if (!cancelled) setPreview(url); });
     return () => { cancelled = true; };
   }, [draft.path]);
+  // Same stale-overwrite guard as SoundPage's pickFile (see its comment):
+  // only the most-recently-STARTED pick wins if two resolve out of order.
+  const pickFileGeneration = useRef(0);
   const pickFile = async () => {
     if (!ctx.os || typeof ctx.os.pickOpenPath !== 'function') { setMessage('File picker unavailable on this host.'); return; }
+    const myGeneration = ++pickFileGeneration.current;
     try {
       const path = await ctx.os.pickOpenPath({ title: 'Choose a background image', filters: [{ extensions: BG_IMAGE_EXTENSIONS, name: 'Images' }] });
+      if (myGeneration !== pickFileGeneration.current) return; // a newer click superseded this one; drop the stale result
       if (path) { setDraft(old => ({...old, path})); setMessage('Chosen: ' + path); }
-    } catch (e) { setMessage(e.message); }
+    } catch (e) { if (myGeneration === pickFileGeneration.current) setMessage(e.message); }
   };
   const save = () => { try {
     if (!scope || currentScope() !== scope) throw Error('Active connection and profile are required.');
