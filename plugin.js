@@ -805,14 +805,43 @@ export function BackgroundImagePage({ctx, events}) {
   const currentScope = () => scopeFor(host.state.focusedSessionOwner?.get()) || scopeFor({connectionId:host.state.connectionId.get(), profile:host.state.profile.get()});
   const [draft, setDraft] = useState(DEFAULT_BG_IMAGE_SETTINGS);
   const [preview, setPreview] = useState(null);
+  // true only when draft.path is non-empty but the most recent resolve
+  // attempt came back with no usable data: URL (missing file, unreadable,
+  // unsupported format, reader threw, etc.) -- distinct from the
+  // legitimate "no path chosen yet" empty state, which shows neither a
+  // preview nor this error.
+  const [previewError, setPreviewError] = useState(false);
   const [message, setMessage] = useState('');
-  useEffect(() => { setDraft(readBackgroundImageSettings(ctx, scope)); setPreview(null); setMessage(''); }, [ctx, scope]);
+  // Local, decoupled copy of the path text for the manual-entry field.
+  // Deliberately NOT the same state as draft.path: draft.path only changes
+  // on a committed action (picker result, scope switch, or this field's own
+  // blur/Enter commit), so typing here never by itself re-triggers the
+  // [draft.path] resolve effect below -- avoids calling
+  // resolveBackgroundImageDataUrl on every keystroke. Kept in sync
+  // whenever draft.path changes from ANY source (picker, scope switch, or
+  // our own commit) so the field always mirrors "what would be picked".
+  const [pathText, setPathText] = useState(DEFAULT_BG_IMAGE_SETTINGS.path);
+  useEffect(() => { setPathText(draft.path); }, [draft.path]);
+  useEffect(() => { setDraft(readBackgroundImageSettings(ctx, scope)); setPreview(null); setPreviewError(false); setMessage(''); }, [ctx, scope]);
   useEffect(() => {
     let cancelled = false;
-    if (!draft.path) { setPreview(null); return; }
-    resolveBackgroundImageDataUrl(draft.path).then(url => { if (!cancelled) setPreview(url); });
+    if (!draft.path) { setPreview(null); setPreviewError(false); return; }
+    resolveBackgroundImageDataUrl(draft.path).then(url => {
+      if (cancelled) return;
+      setPreview(url);
+      setPreviewError(!url);
+    });
     return () => { cancelled = true; };
   }, [draft.path]);
+  // Commits the typed/pasted text into draft.path -- called on blur and on
+  // Enter, NOT on every onChange, so a typed path only ever resolves once
+  // per deliberate "I'm done editing this" action. A no-op (no state
+  // change, no resolve) when the trimmed text already matches draft.path,
+  // so repeated blur/Enter on unchanged text never re-triggers a resolve.
+  const commitPathText = () => {
+    const trimmed = pathText.trim();
+    if (trimmed !== draft.path) setDraft(old => ({...old, path: trimmed}));
+  };
   // Same stale-overwrite guard as SoundPage's pickFile (see its comment):
   // only the most-recently-STARTED pick wins if two resolve out of order.
   // Same documented policy as SoundPage.pickFile: a result lands in the
@@ -851,7 +880,17 @@ export function BackgroundImagePage({ctx, events}) {
       soundButton('Choose image…', pickFile, false),
       jsx('span', {'aria-label':'Chosen background image path', children: draft.path || 'No image chosen.'})
     ]}),
+    jsx('label', {style:ui.label, htmlFor:'studio-bg-image-path', children:'Or type/paste an image path'}),
+    jsx('input', {
+      id:'studio-bg-image-path', style:ui.field, value:pathText, maxLength:1000,
+      placeholder:'C:\\Users\\you\\Pictures\\wall.png',
+      'aria-label':'Background image file path',
+      onChange:e=>setPathText(e.target.value),
+      onBlur:commitPathText,
+      onKeyDown:e=>{ if (e.key === 'Enter') { e.preventDefault(); commitPathText(); } }
+    }),
     preview ? jsx('img', {src:preview, alt:'Background image preview', style:{display:'block', marginTop:10, maxWidth:220, maxHeight:140, borderRadius:6, border:'1px solid var(--ui-stroke-secondary)'}}) : null,
+    previewError ? jsx('p', {role:'alert', 'aria-label':'Background image path error', style:{margin:'6px 0 0', color:'var(--ui-danger, #c0392b)', fontSize:13}, children:'Could not load an image from this path. Check it exists and is a supported image file (png/jpg/jpeg/gif/webp).'}) : null,
     jsx('label', {style:ui.label, htmlFor:'studio-bg-image-opacity', children:'Opacity: ' + draft.opacity + '%'}),
     jsx('input', {id:'studio-bg-image-opacity', type:'range', min:0, max:100, step:1, value:draft.opacity, onChange:e=>setDraft(old=>({...old, opacity:clampBgOpacity(e.target.value)})), 'aria-label':'Background image opacity', style:{display:'block', width:'min(100%, 320px)'}}),
     jsx('label', {style:ui.label, htmlFor:'studio-bg-image-size', children:'Size: ' + draft.size + '%'}),
